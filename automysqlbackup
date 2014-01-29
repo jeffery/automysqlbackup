@@ -374,36 +374,6 @@ if [ "$MAX_ALLOWED_PACKET" ];
 		OPT="$OPT --max_allowed_packet=$MAX_ALLOWED_PACKET"
 	fi
 
-# Create required directories
-if [ ! -e "$BACKUPDIR" ]		# Check Backup Directory exists.
-	then
-	mkdir -p "$BACKUPDIR"
-fi
-
-if [ ! -e "$BACKUPDIR/daily" ]		# Check Daily Directory exists.
-	then
-	mkdir -p "$BACKUPDIR/daily"
-fi
-
-if [ ! -e "$BACKUPDIR/weekly" ]		# Check Weekly Directory exists.
-	then
-	mkdir -p "$BACKUPDIR/weekly"
-fi
-
-if [ ! -e "$BACKUPDIR/monthly" ]	# Check Monthly Directory exists.
-	then
-	mkdir -p "$BACKUPDIR/monthly"
-fi
-
-if [ "$LATEST" = "yes" ]
-then
-	if [ ! -e "$BACKUPDIR/latest" ]	# Check Latest Directory exists.
-	then
-		mkdir -p "$BACKUPDIR/latest"
-	fi
-rm -f "$BACKUPDIR"/latest/*
-fi
-
 # IO redirection for logging.
 touch $LOGFILE
 exec 6>&1           # Link file descriptor #6 with stdout.
@@ -416,6 +386,23 @@ exec 2> $LOGERR     # stderr replaced with file $LOGERR.
 
 
 # Functions
+
+# Hard Linking function
+hardLink() {
+	local source=$1
+	local destination=$2
+	printf "Creating hard link of \n\t$source \nto \n\t$destination\n"
+	if [ -f $source ]; then
+		ln -f $source $destination
+		if [ $? -ne 0 ]; then
+			false
+		else
+			true
+		fi
+	else
+		false
+	fi
+}
 
 # Database dump function
 dbdump () {
@@ -438,24 +425,65 @@ dbdump () {
 # Compression function plus latest copy
 SUFFIX=""
 compression () {
-if [ "$COMP" = "gzip" ]; then
-	gzip -f "$1"
-	echo
-	echo Backup Information for "$1"
-	gzip -l "$1.gz"
-	SUFFIX=".gz"
-elif [ "$COMP" = "bzip2" ]; then
-	echo Compression information for "$1.bz2"
-	bzip2 -f -v $1 2>&1
-	SUFFIX=".bz2"
-else
-	echo "No compression option set, check advanced settings"
-fi
-if [ "$LATEST" = "yes" ]; then
-	cp $1$SUFFIX "$BACKUPDIR/latest/"
-fi	
-return 0
+	if [ "$COMP" = "gzip" ]; then
+		gzip -f "$1"
+		echo
+		echo Backup Information for "$1"
+		gzip -l "$1.gz"
+		SUFFIX=".gz"
+	elif [ "$COMP" = "bzip2" ]; then
+		echo Compression information for "$1.bz2"
+		bzip2 -f -v $1 2>&1
+		SUFFIX=".bz2"
+	else
+		echo "No compression option set, check advanced settings"
+	fi
+
+	if [ "$LATEST" = "yes" ]; then
+		hardLink "$1$SUFFIX" "$BACKUPDIR/latest/"
+	fi
+	return 0
 }
+
+
+# Create directory function
+createDirectory()
+{
+	local directoryPath="$1"
+	if [ ! -e "$directoryPath" ]
+		then
+		mkdir -pv "$directoryPath"
+	fi
+}
+
+
+# Hostname for LOG information
+if [ "$DBHOST" = "localhost" ]; then
+	HOST=`hostname`
+	if [ "$SOCKET" ]; then
+		OPT="$OPT --socket=$SOCKET"
+	fi
+else
+	HOST=$DBHOST
+fi
+
+echo ======================================================================
+echo AutoMySQLBackup VER $VER
+echo http://sourceforge.net/projects/automysqlbackup/
+echo
+echo Backup of Database Server - $HOST
+echo ======================================================================
+
+# Create required directories
+createDirectory "$BACKUPDIR"		    # Check Backup Directory exists.
+createDirectory "$BACKUPDIR/daily"		# Check Daily Directory exists.
+createDirectory "$BACKUPDIR/weekly"		# Check Weekly Directory exists.
+createDirectory "$BACKUPDIR/monthly"	# Check Monthly Directory exists.
+if [ "$LATEST" = "yes" ]
+then
+	createDirectory "$BACKUPDIR/latest" # Check Latest Directory exists.
+	rm -f "$BACKUPDIR"/latest/*
+fi
 
 
 # Run command before we begin
@@ -481,15 +509,7 @@ else
 	OPT="$OPT --databases"
 fi
 
-# Hostname for LOG information
-if [ "$DBHOST" = "localhost" ]; then
-	HOST=`hostname`
-	if [ "$SOCKET" ]; then
-		OPT="$OPT --socket=$SOCKET"
-	fi
-else
-	HOST=$DBHOST
-fi
+
 
 # If backing up all DBs on the server
 if [ "$DBNAMES" = "all" ]; then
@@ -505,60 +525,44 @@ if [ "$DBNAMES" = "all" ]; then
 		DBNAMES=`echo $DBNAMES | sed "s/\b$exclude\b//g"`
 	done
 
-        MDBNAMES=$DBNAMES
+	MDBNAMES=$DBNAMES
 fi
-	
-echo ======================================================================
-echo AutoMySQLBackup VER $VER
-echo http://sourceforge.net/projects/automysqlbackup/
-echo 
-echo Backup of Database Server - $HOST
-echo ======================================================================
+
 
 # Test is seperate DB backups are required
 if [ "$SEPDIR" = "yes" ]; then
 echo Backup Start Time `date`
 echo ======================================================================
-	# Monthly Full Backup of all Databases
-	if [ "$DOM" = "01" ]; then
-		for MDB in $MDBNAMES
-		do
- 
-			 # Prepare $DB for using
-		        MDB="`echo $MDB | sed 's/%/ /g'`"
-
-			if [ ! -e "$BACKUPDIR/monthly/$MDB" ]		# Check Monthly DB Directory exists.
-			then
-				mkdir -p "$BACKUPDIR/monthly/$MDB"
-			fi
-			echo Monthly Backup of $MDB...
-				dbdump "$MDB" "$BACKUPDIR/monthly/$MDB/${MDB}_$DATE.$M.$MDB.sql"
-				compression "$BACKUPDIR/monthly/$MDB/${MDB}_$DATE.$M.$MDB.sql"
-				BACKUPFILES="$BACKUPFILES $BACKUPDIR/monthly/$MDB/${MDB}_$DATE.$M.$MDB.sql$SUFFIX"
-			echo ----------------------------------------------------------------------
-		done
-	fi
-
 	for DB in $DBNAMES
 	do
-	# Prepare $DB for using
-	DB="`echo $DB | sed 's/%/ /g'`"
-	
-	# Create Seperate directory for each DB
-	if [ ! -e "$BACKUPDIR/daily/$DB" ]		# Check Daily DB Directory exists.
-		then
-		mkdir -p "$BACKUPDIR/daily/$DB"
-	fi
-	
-	if [ ! -e "$BACKUPDIR/weekly/$DB" ]		# Check Weekly DB Directory exists.
-		then
-		mkdir -p "$BACKUPDIR/weekly/$DB"
-	fi
-	
-	# Weekly Backup
-	if [ "$DNOW" = "$DOWEEKLY" ]; then
-		echo Weekly Backup of Database \( $DB \)
-		echo Rotating 5 weeks Backups...
+		# Prepare $DB for using
+		DB="`echo $DB | sed 's/%/ /g'`"
+
+		# Daily Backup
+		echo Daily Backup of Database \( $DB \)
+
+		# Create Seperate directory for each DB
+		createDirectory "$BACKUPDIR/daily/$DB"		# Check Daily DB Directory exists.
+
+		echo Rotating last weeks Backup...
+		rm -fv "$BACKUPDIR/daily/$DB/${DB}_daily.$DOW."*.sql.*
+		echo
+
+		DAILY_SQL_FILE_DESTINATION="$BACKUPDIR/daily/$DB/${DB}_daily.$DOW.$DATE.sql"
+		dbdump "$DB" "$DAILY_SQL_FILE_DESTINATION"
+		compression "$DAILY_SQL_FILE_DESTINATION"
+		DAILY_COMPRESSED_SQL_FILE_DESTINATION="${DAILY_SQL_FILE_DESTINATION}${SUFFIX}"
+		BACKUPFILES="$BACKUPFILES $DAILY_COMPRESSED_SQL_FILE_DESTINATION"
+
+		echo ----------------------------------------------------------------------
+
+		# Weekly Backup
+		if [ "$DNOW" = "$DOWEEKLY" ]; then
+			echo Weekly Backup of Database \( $DB \)
+
+			createDirectory "$BACKUPDIR/weekly/$DB"		# Check Weekly DB Directory exists.
+
+			# Rotating 5 weeks Backup
 			if [ "$W" -le 05 ];then
 				REMW=`expr 48 + $W`
 			elif [ "$W" -lt 15 ];then
@@ -566,25 +570,77 @@ echo ======================================================================
 			else
 				REMW=`expr $W - 5`
 			fi
-		rm -fv "$BACKUPDIR/weekly/$DB/${DB}_week.$REMW".*
-		echo
-			dbdump "$DB" "$BACKUPDIR/weekly/$DB/${DB}_week.$W.$DATE.sql"
-			compression "$BACKUPDIR/weekly/$DB/${DB}_week.$W.$DATE.sql"
-			BACKUPFILES="$BACKUPFILES $BACKUPDIR/weekly/$DB/${DB}_week.$W.$DATE.sql$SUFFIX"
-		echo ----------------------------------------------------------------------
-	
-	# Daily Backup
-	else
-		echo Daily Backup of Database \( $DB \)
-		echo Rotating last weeks Backup...
-		rm -fv "$BACKUPDIR/daily/$DB"/*."$DOW".sql.*
-		echo
-			dbdump "$DB" "$BACKUPDIR/daily/$DB/${DB}_$DATE.$DOW.sql"
-			compression "$BACKUPDIR/daily/$DB/${DB}_$DATE.$DOW.sql"
-			BACKUPFILES="$BACKUPFILES $BACKUPDIR/daily/$DB/${DB}_$DATE.$DOW.sql$SUFFIX"
-		echo ----------------------------------------------------------------------
-	fi
+
+			echo Rotating 5 weeks Backups...
+			rm -fv "$BACKUPDIR/weekly/$DB/${DB}_weekly.$REMW".*
+			rm -fv "$BACKUPDIR/weekly/$DB/${DB}_weekly.$W."*.sql.*
+			echo
+
+			WEEEKLY_SQL_FILE_DESTINATION="$BACKUPDIR/weekly/$DB/${DB}_weekly.$W.$DATE.sql"
+			WEEKLY_COMPRESSED_SQL_FILE_DESTINATION="${WEEEKLY_SQL_FILE_DESTINATION}${SUFFIX}"
+
+			hardLink "$DAILY_COMPRESSED_SQL_FILE_DESTINATION" "$WEEKLY_COMPRESSED_SQL_FILE_DESTINATION" \
+				|| printf "Failed Hard linking \n\t$DAILY_COMPRESSED_SQL_FILE_DESTINATION \nto \n\t$WEEKLY_COMPRESSED_SQL_FILE_DESTINATION\n" 1>&2
+			BACKUPFILES="$BACKUPFILES $WEEKLY_COMPRESSED_SQL_FILE_DESTINATION"
+
+			echo ----------------------------------------------------------------------
+		fi
+
+		# Monthly Backup of common databases, ones which are specified in MDBNAMES and DBNAMES
+		if [ "$DOM" = "01" ]; then
+			if grep -q "\(^\| \)$DB\( \|$\)" <<<$MDBNAMES; then
+
+				echo Monthly Backup of Database \( $DB \)
+
+				createDirectory "$BACKUPDIR/monthly/$DB"		# Check Monthly DB Directory exists.
+
+				echo Rotating monthly Backups...
+				rm -fv "$BACKUPDIR/monthly/$DB/${DB}_monthly.$M".*
+
+				MONTHLY_SQL_FILE_DESTINATION="$BACKUPDIR/monthly/$DB/${DB}_monthly.$M.$DATE.sql"
+				MONTHLY_COMPRESSED_SQL_FILE_DESTINATION="${MONTHLY_SQL_FILE_DESTINATION}${SUFFIX}"
+
+				hardLink "$DAILY_COMPRESSED_SQL_FILE_DESTINATION" "$MONTHLY_COMPRESSED_SQL_FILE_DESTINATION" \
+				|| printf "Failed Hard linking \n\t$DAILY_COMPRESSED_SQL_FILE_DESTINATION \nto \n\t$MONTHLY_COMPRESSED_SQL_FILE_DESTINATION\n" 1>&2
+				BACKUPFILES="$BACKUPFILES $MONTHLY_COMPRESSED_SQL_FILE_DESTINATION"
+				echo ----------------------------------------------------------------------
+			fi
+		fi
+
 	done
+
+	# Monthly Backup of databases which are not in normal backups list (DBNAMES) but exist in MDBNAMES
+	if [ "$DOM" = "01" ]; then
+
+		echo
+		echo Monthly Backups Only
+
+		for MDB in $MDBNAMES
+		do
+			# Prepare $DB for using
+			MDB="`echo $MDB | sed 's/%/ /g'`"
+
+			if ! grep -q "\(^\| \)$MDB\( \|$\)" <<<$DBNAMES; then
+				echo Monthly Backup of Database \( $MDB \)
+
+				createDirectory "$BACKUPDIR/monthly/$MDB"		# Check Monthly DB Directory exists.
+
+				echo Rotating monthly Backups...
+				rm -fv "$BACKUPDIR/monthly/$MDB/${MDB}_monthly.$M".*
+
+				MONTHLY_SQL_FILE_DESTINATION="$BACKUPDIR/monthly/$MDB/${MDB}_monthly.$M.$DATE.sql"
+				MONTHLY_COMPRESSED_SQL_FILE_DESTINATION="${MONTHLY_SQL_FILE_DESTINATION}${SUFFIX}"
+
+				dbdump "$MDB" "$MONTHLY_SQL_FILE_DESTINATION"
+				compression "$MONTHLY_SQL_FILE_DESTINATION"
+				BACKUPFILES="$BACKUPFILES $MONTHLY_COMPRESSED_SQL_FILE_DESTINATION"
+
+				echo ----------------------------------------------------------------------
+			fi
+
+		done
+	fi
+
 echo Backup End `date`
 echo ======================================================================
 
